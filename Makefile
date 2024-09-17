@@ -1,6 +1,3 @@
-CC = gcc
-CFLAGS = -Wall -pedantic
-
 target = efusemem
 
 src = efusemem.c
