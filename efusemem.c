@@ -122,7 +122,7 @@ enum efuse_op_flag {
 static efuse_lock_options lockopt;
 
 void print_help(void) {
-	printf("Usage: efusemem read/write/lock [fhkmry] <options>\n");
+	printf("Usage: efusemem read/write/lock [fhkmry] <options> <path_to_nvmem>\n");
 	puts("  Read/Write options:\n"
 		 "	-k --hash		read/write HASH from commandline\n"
 		 "	-f --file		write HASH from file\n"
@@ -135,6 +135,8 @@ void print_help(void) {
 		 "  General options:\n"
 		 "	-y --force		bypass user confirm. Say yes to all\n"
 		 "	-h --help		print help info\n"
+		 "  path to nvmem\n"
+		 "  for i.MX6UL: /sys/bus/nvmem/devices/imx-ocotp0/nvmem\n"
 	);
 	//printf("\tl:	Lock hash\n");
 	//printf("\tu:	Unlock hash\n");
