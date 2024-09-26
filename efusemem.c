@@ -471,9 +471,11 @@ int main(int argc, char** argv)
 	char *ofile = NULL;
 	enum efuse_op_flag ioflag = false;
 	int size;
+	int return_code=0;
 
 	if (argc < 2) {
 		printf("Too few arguments\n");
+		print_help();
 		exit(EXIT_FAILURE);
 	}
 
@@ -490,7 +492,7 @@ int main(int argc, char** argv)
 
 	efuse = efuse_data_init(imx6ull_fuses);
 	if (!efuse)
-		goto main_exit;
+		return EXIT_FAILURE;
 
 	const char *opts = "k::m::r::f:S:yh";
 	while((opt = getopt_long(argc, argv, opts, efuseopts, &efuseoptind)) != -1) {
@@ -529,12 +531,14 @@ int main(int argc, char** argv)
 
 	if (optind == argc || !argv[optind+1]) {
 		print_help();
+		return_code = EXIT_FAILURE;
 		goto main_free_mem;
 	}
 
 	ofile = strdup(argv[optind+1]);
 	if (!ofile) {
 		printf("Cannot allocate memory\n");
+		return_code = EXIT_FAILURE;
 		goto free_file;
 	}
 
@@ -543,6 +547,7 @@ int main(int argc, char** argv)
 	efuse->fd = open(ofile, O_RDWR, 0);
 	if (efuse->fd < 0) {
 		perror("Error");
+		return_code = EXIT_FAILURE;
 		goto main_exit;
 	}
 
@@ -557,6 +562,7 @@ int main(int argc, char** argv)
 
 	if (close(efuse->fd) < 0) {
 		perror("Error");
+		return_code = EXIT_FAILURE;
 		goto free_file;
 	}
 
@@ -573,5 +579,5 @@ main_free_mem:
 	if (efuse)
 		free(efuse);
 main_exit:
-	return 0;
+	return return_code;
 }
