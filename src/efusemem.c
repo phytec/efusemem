@@ -13,6 +13,7 @@
 #include <fcntl.h>
 #include <inttypes.h>
 #include <stdbool.h>
+#include "version.h"
 
 #define BIT(n) (0x1UL << (n))
 #define BITMAP(x, n)	(x << n)
@@ -122,7 +123,7 @@ enum efuse_op_flag {
 static efuse_lock_options lockopt;
 
 void print_help(void) {
-	printf("Usage: efusemem read/write/lock [fhkmry] <options> <path_to_nvmem>\n");
+	printf("Usage: efusemem read/write/lock [fhkmryv] <options> <path_to_nvmem>\n");
 	puts("  Read/Write options:\n"
 		 "	-k --hash		read/write HASH from commandline\n"
 		 "	-f --file		write HASH from file\n"
@@ -135,6 +136,7 @@ void print_help(void) {
 		 "  General options:\n"
 		 "	-y --force		bypass user confirm. Say yes to all\n"
 		 "	-h --help		print help info\n"
+		 "  -v --version    print version of the program\n"
 		 "  path to nvmem\n"
 		 "  for i.MX6UL: /sys/bus/nvmem/devices/imx-ocotp0/nvmem\n"
 	);
@@ -458,6 +460,7 @@ const struct option efuseopts[] = {
 	{"file", required_argument, 0, 'f'},
 	{"force", no_argument, 0, 'y'},
 	{"help", no_argument, 0, 'h'},
+	{"version", no_argument, 0, 'v'},
 	{"secureboot", no_argument, &lockopt.secureboot, true},
 	{"sdp", no_argument, &lockopt.sdp, true},
 	{"jtag", no_argument, &lockopt.jtag, true},
@@ -485,16 +488,12 @@ int main(int argc, char** argv)
 		ioflag = IO_WRITE;
 	else if (!strcmp(argv[1], "lock"))
 		ioflag = IO_LOCK;
-	else {
-		print_help();
-		return EXIT_FAILURE;
-	}
-
+	
 	efuse = efuse_data_init(imx6ull_fuses);
 	if (!efuse)
 		return EXIT_FAILURE;
 
-	const char *opts = "k::m::r::f:S:yh";
+	const char *opts = "k::m::r::f:S:yhv";
 	while((opt = getopt_long(argc, argv, opts, efuseopts, &efuseoptind)) != -1) {
 		switch(opt) {
 			case 'k':;
@@ -523,6 +522,10 @@ int main(int argc, char** argv)
 				break;
 			case 'h':
 				print_help();
+				goto main_free_mem;
+				break;
+			case 'v':
+				printf("Version: %s\n",EFUSEMEM_VERSION_STRING);
 			default:
 				goto main_free_mem;
 				break;
@@ -530,6 +533,7 @@ int main(int argc, char** argv)
 	}
 
 	if (optind == argc || !argv[optind+1]) {
+		printf("path to nvmem is missing\n");
 		print_help();
 		return_code = EXIT_FAILURE;
 		goto main_free_mem;
