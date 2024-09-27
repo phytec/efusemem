@@ -190,7 +190,6 @@ static int _write(int fd, uint8_t *buf, int offset, int len)
 {
 	int size;
 	lseek(fd, offset, SEEK_SET);
-
 	size = write(fd, buf, len);
 	if (size < 0) {
 		perror("Error");
@@ -227,12 +226,12 @@ int user_confirmation(uint8_t *data, int reg, int len)
 	int i;
 	int ret;
 
-	printf("This will irrecoverably burn the value ");
+	printf("This will irrecoverably burn the value\n");
 
 	for (i = 0; i < len; i++)
 		printf("%.2x ", data[i]);
 
-	printf(" to address 0x%x. Do you want to continue? [Y/N]: ", reg);
+	printf(" to address 0x%x.\nDo you want to continue? [Y/N]: ", reg);
 
 	ret = scanf("%c", &input);
 
@@ -258,7 +257,12 @@ int efuse_write(struct efuse_data *efuse, uint8_t *buf)
 
 	if (efuse->force || user_confirmation(buf, fuse->reg, fuse->size)) {
 		ret = _write(efuse->fd, buf, fuse->reg, fuse->size);
-		printf("Done!\n");
+		if (ret == fuse->size) {
+			printf("Done!\n");
+		}
+		else {
+			printf("Burn efuse aborted. \n");
+		}
 	} else {
 		printf("Burn efuse aborted. \n");
 	}
@@ -276,9 +280,9 @@ int efuse_hashfile_update(struct efuse_data *efuse, uint8_t *file)
 		return ret;
 	}
 
-	ret = efuse_write(efuse, efuse->hexbin.byte);
+	ret = efuse_write_srk(efuse, efuse->hexbin.byte);
 
-	return 0;
+	return ret;
 }
 
 int efuse_revoke_status(struct efuse_data *efuse, uint32_t *rvk)
@@ -326,11 +330,34 @@ int efuse_revoke_update(struct efuse_data *efuse, uint8_t *rvk)
 	return ret;
 }
 
+int efuse_write_srk(struct efuse_data *efuse, uint8_t *buf)
+{
+	struct fusemap *fuse = &efuse->fuses[efuse->reg_current];
+	int ret=-1;
+
+	printf("efuse_write_srk\n");
+	if (efuse->force || user_confirmation(buf, fuse->reg, fuse->size)) {
+		//write allways 2 words
+		unsigned int offset=fuse->reg;
+		int anz=4;
+		for (unsigned int i=0; i < fuse->size; i=i+anz) {
+			ret = _write(efuse->fd, buf,  offset+i, anz);
+			if (ret != anz) {
+				printf("Burn efuse aborted at offset 0x%x  \n", offset+i);
+				return -1;
+			}
+			buf=buf+anz;
+		}
+		ret = fuse->size;
+	}
+	return ret;
+}
+
 struct fusemap imx6ull_fuses[] = {
 	add_fuse("CFG5", BANK_WORD_OFFSET(0, 6), 4, 100, NULL, NULL),
-	add_fuse("SRK", BANK_WORD_OFFSET(3, 0), 32, 14, NULL, NULL),
-	add_fuse("MAC", BANK_WORD_OFFSET(4, 2), 6, 8, NULL, NULL),
-	add_fuse("Revoke", BANK_WORD_OFFSET(5, 7), 1, 100, efuse_revoke_status, efuse_revoke_update),
+	add_fuse("SRK", BANK_WORD_OFFSET(3, 0), 32, 14, NULL, efuse_write_srk),
+	add_fuse("MAC", BANK_WORD_OFFSET(4, 2), 8, 8, NULL, NULL),
+	add_fuse("Revoke", BANK_WORD_OFFSET(5, 7), 4, 100, efuse_revoke_status, efuse_revoke_update),
 	{NULL}
 };
 
@@ -359,8 +386,19 @@ void efuse_io(struct efuse_data *efuse, enum efuse_op_flag opflag)
 			}
 
 			printf("%s: ", fuse->name);
-			for (int i = 0; i < fuse->size; i++)
-				printf("%.2x ", *(uint8_t*)(data+i));
+			if (fuse->name == "SRK") {
+				for (int i = 0; i < fuse->size; i=i+2)
+					printf("%.2x%.2x", *(uint8_t*)(data+i),*(uint8_t*)(data+i+1));
+			}
+			else if (fuse->name == "MAC") {
+				for (int i = 5; i >= 0; i--) {
+					printf("%.2x", *(uint8_t*)(data+i));
+				}
+			}
+			else {
+				for (int i = 0; i < fuse->size; i=i+1)
+					printf("%.2x ", *(uint8_t*)(data+i));
+			}
 			printf("\n");
 		} else if (opflag == IO_WRITE) {
 			printf("%s: Write operation\n", fuse->name);
