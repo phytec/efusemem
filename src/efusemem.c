@@ -106,14 +106,6 @@ struct efuse_data {
 	bool force;
 };
 
-enum efuse_flags {
-	EFUSE_HASH_WRITE,
-	EFUSE_HASH_READ,
-	EFUSE_REVOKE_WRITE,
-	EFUSE_REVOKE_READ,
-	EFUSE_END
-};
-
 enum efuse_op_flag {
 	IO_READ,
 	IO_WRITE,
@@ -140,8 +132,6 @@ void print_help(void) {
 		 "  path to nvmem\n"
 		 "  for i.MX6UL: /sys/bus/nvmem/devices/imx-ocotp0/nvmem\n"
 	);
-	//printf("\tl:	Lock hash\n");
-	//printf("\tu:	Unlock hash\n");
 }
 
 static struct efuse_data *efuse;
@@ -150,7 +140,7 @@ void str_to_hex(char *dest, char *src, size_t n)
 {
 	char c;
 
-	int i;
+	unsigned i;
 	int j = 0;
 
 	for (i = 0; i < n; i++) {
@@ -270,21 +260,6 @@ int efuse_write(struct efuse_data *efuse, uint8_t *buf)
 	return ret;
 }
 
-int efuse_hashfile_update(struct efuse_data *efuse, uint8_t *file)
-{
-	int ret;
-
-	ret = read_hash_from_file(efuse, (char*)file);
-	if (ret < 0) {
-		printf("Failed to read from file '%s': %d\n", file, ret);
-		return ret;
-	}
-
-	ret = efuse_write_srk(efuse, efuse->hexbin.byte);
-
-	return ret;
-}
-
 int efuse_revoke_status(struct efuse_data *efuse, uint32_t *rvk)
 {
 	int ret;
@@ -360,6 +335,21 @@ struct fusemap imx6ull_fuses[] = {
 	add_fuse("Revoke", BANK_WORD_OFFSET(5, 7), 4, 100, efuse_revoke_status, efuse_revoke_update),
 	{NULL}
 };
+
+int efuse_hashfile_update(struct efuse_data *efuse, uint8_t *file)
+{
+	int ret;
+
+	ret = read_hash_from_file(efuse, (char*)file);
+	if (ret < 0) {
+		printf("Failed to read from file '%s': %d\n", file, ret);
+		return ret;
+	}
+
+	ret = efuse_write_srk(efuse, efuse->hexbin.byte);
+
+	return ret;
+}
 
 void efuse_io(struct efuse_data *efuse, enum efuse_op_flag opflag)
 {
@@ -526,7 +516,7 @@ int main(int argc, char** argv)
 		ioflag = IO_WRITE;
 	else if (!strcmp(argv[1], "lock"))
 		ioflag = IO_LOCK;
-	
+
 	efuse = efuse_data_init(imx6ull_fuses);
 	if (!efuse)
 		return EXIT_FAILURE;
@@ -545,7 +535,7 @@ int main(int argc, char** argv)
 				fuse->arg = strdup(optarg);
 				if (!fuse->arg) {
 					printf("Cannot allocate memory\n");
-					goto free_file;
+					goto main_free_file;
 				}
 				fuse->is_active = true;
 				fuse->write = efuse_hashfile_update;
@@ -581,7 +571,7 @@ int main(int argc, char** argv)
 	if (!ofile) {
 		printf("Cannot allocate memory\n");
 		return_code = EXIT_FAILURE;
-		goto free_file;
+		goto main_free_file;
 	}
 
 	printf("fuse device: %s\n", ofile);
@@ -605,10 +595,10 @@ int main(int argc, char** argv)
 	if (close(efuse->fd) < 0) {
 		perror("Error");
 		return_code = EXIT_FAILURE;
-		goto free_file;
+		goto main_free_file;
 	}
 
-free_file:
+main_free_file:
 	if (ofile)
 		free(ofile);
 
