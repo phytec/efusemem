@@ -15,6 +15,9 @@
 #include <stdbool.h>
 #include "version.h"
 
+#define MAXBUFSZ	24
+#define SOC_COUNT	1
+
 #define BIT(n) (0x1UL << (n))
 #define BITMAP(x, n)	(x << n)
 
@@ -85,6 +88,11 @@ struct fusemap {
 	bool is_active;
 };
 
+struct soc_fuse {
+	const char *soc_name;
+	struct fusemap *fuse;
+};
+
 struct efuse_lock_options_s {
 	int secureboot;
 	int sdp;
@@ -111,6 +119,8 @@ enum efuse_op_flag {
 	IO_WRITE,
 	IO_LOCK
 };
+
+const char * soc_id_path = "/sys/devices/soc0/soc_id";
 
 static efuse_lock_options lockopt;
 
@@ -243,7 +253,7 @@ int efuse_read(struct efuse_data *efuse, uint8_t *buf)
 int efuse_write(struct efuse_data *efuse, uint8_t *buf)
 {
 	struct fusemap *fuse = &efuse->fuses[efuse->reg_current];
-	int ret;
+	int ret = 0;
 
 	if (efuse->force || user_confirmation(buf, fuse->reg, fuse->size)) {
 		ret = _write(efuse->fd, buf, fuse->reg, fuse->size);
@@ -336,6 +346,41 @@ struct fusemap imx6ull_fuses[] = {
 	{NULL}
 };
 
+static const struct soc_fuse socs[SOC_COUNT] = {
+	{"i.MX6ULL", imx6ull_fuses},
+};
+
+struct fusemap * get_soc_fusemap(void)
+{
+	FILE * soc_id;
+	char buf[MAXBUFSZ];
+
+	int i;
+
+	/* For the means of generic SOC approach (at least for ARM cores)
+	 * we need to detect the soc-type. This should be possible through
+	 * vendor reserved registers. For now, we can use the kernel
+	 * derived file for SoC ID.
+	 */
+
+	soc_id = fopen(soc_id_path, "r");
+	if (soc_id == NULL) {
+		perror("Error");
+		return NULL;
+	}
+
+	fgets(buf, MAXBUFSZ, soc_id);
+
+	for (i = 0; i < SOC_COUNT; i++) {
+		if ( ! strncmp(buf, socs[i].soc_name, strlen(socs[i].soc_name)) )
+			break;
+	}
+
+	fclose(soc_id);
+
+	return socs[i].fuse;
+}
+
 int efuse_hashfile_update(struct efuse_data *efuse, uint8_t *file)
 {
 	int ret;
@@ -369,7 +414,7 @@ void efuse_io(struct efuse_data *efuse, enum efuse_op_flag opflag)
 		}
 		if (opflag == IO_READ) {
 			ret = fuse->read ? fuse->read(efuse, (uint32_t*)data)
-							: efuse_read(efuse, data);
+						: efuse_read(efuse, data);
 			if (ret < 0) {
 				printf("Failed to read %s\n", fuse->name);
 				goto efuse_io_exit;
@@ -463,7 +508,7 @@ efuse_io_lock_ret_fail:
 	printf("Burn efuse aborted.\n");
 }
 
-struct efuse_data * efuse_data_init(struct fusemap *fuses)
+struct efuse_data * efuse_data_init(void)
 {
 	struct efuse_data *efuse_data;
 
@@ -475,7 +520,12 @@ struct efuse_data * efuse_data_init(struct fusemap *fuses)
 
 	efuse_data->reg_current = 0;
 	efuse_data->force = false;
-	efuse_data->fuses = fuses;
+	efuse_data->fuses = get_soc_fusemap();
+
+	if (efuse_data->fuses == NULL) {
+		printf("Cannot get SOC type. Using i.MX6ULL as default value\n");
+		efuse_data->fuses = imx6ull_fuses;
+	}
 
 efuse_init_ret:
 	return efuse_data;
@@ -517,7 +567,7 @@ int main(int argc, char** argv)
 	else if (!strcmp(argv[1], "lock"))
 		ioflag = IO_LOCK;
 
-	efuse = efuse_data_init(imx6ull_fuses);
+	efuse = efuse_data_init();
 	if (!efuse)
 		return EXIT_FAILURE;
 
