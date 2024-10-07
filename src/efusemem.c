@@ -376,11 +376,11 @@ void efuse_io(struct efuse_data *efuse, enum efuse_op_flag opflag)
 			}
 
 			printf("%s: ", fuse->name);
-			if (fuse->name == "SRK") {
+			if (! strcmp(fuse->name, "SRK") ) {
 				for (int i = 0; i < fuse->size; i=i+2)
 					printf("%.2x%.2x", *(uint8_t*)(data+i),*(uint8_t*)(data+i+1));
 			}
-			else if (fuse->name == "MAC") {
+			else if (! strcmp(fuse->name, "MAC") ) {
 				for (int i = 5; i >= 0; i--) {
 					printf("%.2x", *(uint8_t*)(data+i));
 				}
