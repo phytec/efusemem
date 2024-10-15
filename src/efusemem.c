@@ -110,7 +110,7 @@ struct efuse_data {
 		uint64_t lword[4];
 	} hexbin;
 	uint32_t lockstat;
-	int fd;
+	FILE *file;
 	bool force;
 };
 
@@ -173,27 +173,30 @@ void str_to_hex(char *dest, char *src, size_t n)
 	}
 }
 
-static int _read(int fd, uint8_t *buf, int offset, size_t len)
+static int _read(FILE *file, uint8_t *buf, int offset, size_t len)
 {
 	int size;
-	lseek(fd, offset, SEEK_SET);
+	fseek(file, offset, SEEK_SET);
 
-	size = read(fd, buf, len);
-	if (size < 0) {
-		perror("Error");
-		return errno;
+	size = fread(buf, len, 1, file);
+	if (ferror(file)) {
+		printf("Read from file failed\n");
+		clearerr(file);
+		return -1;
 	}
 	return size;
 }
 
-static int _write(int fd, uint8_t *buf, int offset, int len)
+static int _write(FILE *file, uint8_t *buf, int offset, int len)
 {
 	int size;
-	lseek(fd, offset, SEEK_SET);
-	size = write(fd, buf, len);
-	if (size < 0) {
-		perror("Error");
-		return errno;
+	fseek(file, offset, SEEK_SET);
+
+	size = fwrite(buf, 4, len, file);
+	if (ferror(file)) {
+		printf("Write to file failed\n");
+		clearerr(file);
+		return -1;
 	}
 	return size;
 }
@@ -245,7 +248,7 @@ int efuse_read(struct efuse_data *efuse, uint8_t *buf)
 	struct fusemap *fuse = &efuse->fuses[efuse->reg_current];
 	int ret;
 
-	ret = _read(efuse->fd, (uint8_t*)buf, fuse->reg, fuse->size);
+	ret = _read(efuse->file, (uint8_t*)buf, fuse->reg, fuse->size);
 
 	return ret < 0 ? ret : 0;
 }
@@ -256,13 +259,9 @@ int efuse_write(struct efuse_data *efuse, uint8_t *buf)
 	int ret = 0;
 
 	if (efuse->force || user_confirmation(buf, fuse->reg, fuse->size)) {
-		ret = _write(efuse->fd, buf, fuse->reg, fuse->size);
-		if (ret == fuse->size) {
+		ret = _write(efuse->file, buf, fuse->reg, fuse->size >> 2);
+		if (ret == fuse->size >> 2)
 			printf("Done!\n");
-		}
-		else {
-			printf("Burn efuse aborted. \n");
-		}
 	} else {
 		printf("Burn efuse aborted. \n");
 	}
@@ -315,32 +314,9 @@ int efuse_revoke_update(struct efuse_data *efuse, uint8_t *rvk)
 	return ret;
 }
 
-int efuse_write_srk(struct efuse_data *efuse, uint8_t *buf)
-{
-	struct fusemap *fuse = &efuse->fuses[efuse->reg_current];
-	int ret=-1;
-
-	printf("efuse_write_srk\n");
-	if (efuse->force || user_confirmation(buf, fuse->reg, fuse->size)) {
-		//write allways 2 words
-		unsigned int offset=fuse->reg;
-		int anz=4;
-		for (unsigned int i=0; i < fuse->size; i=i+anz) {
-			ret = _write(efuse->fd, buf,  offset+i, anz);
-			if (ret != anz) {
-				printf("Burn efuse aborted at offset 0x%x  \n", offset+i);
-				return -1;
-			}
-			buf=buf+anz;
-		}
-		ret = fuse->size;
-	}
-	return ret;
-}
-
 struct fusemap imx6ull_fuses[] = {
 	add_fuse("CFG5", BANK_WORD_OFFSET(0, 6), 4, 100, NULL, NULL),
-	add_fuse("SRK", BANK_WORD_OFFSET(3, 0), 32, 14, NULL, efuse_write_srk),
+	add_fuse("SRK", BANK_WORD_OFFSET(3, 0), 32, 14, NULL, NULL),
 	add_fuse("MAC", BANK_WORD_OFFSET(4, 2), 8, 8, NULL, NULL),
 	add_fuse("Revoke", BANK_WORD_OFFSET(5, 7), 4, 100, efuse_revoke_status, efuse_revoke_update),
 	{NULL}
@@ -391,7 +367,7 @@ int efuse_hashfile_update(struct efuse_data *efuse, uint8_t *file)
 		return ret;
 	}
 
-	ret = efuse_write_srk(efuse, efuse->hexbin.byte);
+	ret = efuse_write(efuse, efuse->hexbin.byte);
 
 	return ret;
 }
@@ -465,29 +441,29 @@ void efuse_io_lock(struct efuse_data *efuse)
 	printf("%s\n", __func__);
 	printf("jtag: %d\n", lockopt.jtag);
 	if (lockopt.secureboot) {
-		_read(efuse->fd, (uint8_t*)&reg_lock, 0, 4);
+		_read(efuse->file, (uint8_t*)&reg_lock, 0, 4);
 		reg_lock |= BIT(14); // SRK_LOCK
 
-		_read(efuse->fd, (uint8_t*)&reg_cfg5, BANK_WORD_OFFSET(0, 6), 4);
+		_read(efuse->file, (uint8_t*)&reg_cfg5, BANK_WORD_OFFSET(0, 6), 4);
 		reg_cfg5 |= BITMAP(2, 1); // SEC_CONFIG (1x -> security on)
 		reg = BANK_WORD_OFFSET(0, 6);
 	}
 	if (lockopt.sdp) {
 		if (!reg_cfg5)
-			_read(efuse->fd, (uint8_t*)&reg_cfg5, BANK_WORD_OFFSET(0, 6), 4);
+			_read(efuse->file, (uint8_t*)&reg_cfg5, BANK_WORD_OFFSET(0, 6), 4);
 		reg_cfg5 |= BIT(17); // SDP_DISABLE
 		reg = BANK_WORD_OFFSET(0, 6);
 	}
 	if (lockopt.jtag) {
 		if (!reg_cfg5)
-			_read(efuse->fd, (uint8_t*)&reg_cfg5, BANK_WORD_OFFSET(0, 6), 4);
+			_read(efuse->file, (uint8_t*)&reg_cfg5, BANK_WORD_OFFSET(0, 6), 4);
 		reg_cfg5 |= BIT(20); // SJC_DISABLE
 		reg = BANK_WORD_OFFSET(0, 6);
 	}
 
 	if (reg_lock) {
 		if (efuse->force || user_confirmation((uint8_t*)&reg_lock, reg, 4)) {
-		_write(efuse->fd, (uint8_t*)&reg_lock, 0, 4);
+		_write(efuse->file, (uint8_t*)&reg_lock, 0, 4);
 		} else {
 			goto efuse_io_lock_ret_fail;
 		}
@@ -495,7 +471,7 @@ void efuse_io_lock(struct efuse_data *efuse)
 
 	if (reg_cfg5) {
 		if (efuse->force || user_confirmation((uint8_t*)&reg_cfg5, reg, 4)) {
-			_write(efuse->fd, (uint8_t*)&reg_cfg5, reg, 4);
+			_write(efuse->file, (uint8_t*)&reg_cfg5, reg, 4);
 		} else {
 			goto efuse_io_lock_ret_fail;
 		}
@@ -626,15 +602,15 @@ int main(int argc, char** argv)
 
 	printf("fuse device: %s\n", ofile);
 
-	efuse->fd = open(ofile, O_RDWR, 0);
-	if (efuse->fd < 0) {
-		perror("Error");
+	efuse->file = fopen(ofile, "r+");
+	if (efuse->file == NULL) {
+		perror("fopen");
 		return_code = EXIT_FAILURE;
 		goto main_exit;
 	}
 
 	/* Read lock status registers */
-	size = _read(efuse->fd, (uint8_t*)&efuse->lockstat, 0, 4);
+	size = _read(efuse->file, (uint8_t*)&efuse->lockstat, 0, 4);
 	printf("lockstat: %x\n", efuse->lockstat);
 
 	if (ioflag == IO_LOCK)
@@ -642,7 +618,7 @@ int main(int argc, char** argv)
 	else
 		efuse_io(efuse, ioflag);
 
-	if (close(efuse->fd) < 0) {
+	if (fclose(efuse->file) == EOF) {
 		perror("Error");
 		return_code = EXIT_FAILURE;
 		goto main_free_file;
