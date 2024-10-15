@@ -16,14 +16,20 @@
 #include "version.h"
 
 #define MAXBUFSZ	24
-#define SOC_COUNT	1
+#define SOC_COUNT	3
 
 #define BIT(n) (0x1UL << (n))
 #define BITMAP(x, n)	(x << n)
+#define ALIGN(x)	\
+	(!(x & 3) ? x : ((x & ~3) + 4))
 
-#define _BANK(x)	((x) << 5)
+#define MAC_ADDR_MAX		6
+
 #define _WORD(x)	((x) << 2)
-#define BANK_WORD_OFFSET(x, y)	(_BANK(x) + _WORD(y))
+#define _BANK_MX6(x)	((x) << 5)
+#define _BANK_MX8(x)	((x) << 4)
+#define BANK_WORD_OFFSET_MX6(x, y)	(_BANK_MX6(x) + _WORD(y))
+#define BANK_WORD_OFFSET_MX8(x, y)	(_BANK_MX8(x) + _WORD(y))
 
 #define OCOTP_REVOKE(x)	((1 << x) & 0xf)
 
@@ -259,7 +265,7 @@ int efuse_write(struct efuse_data *efuse, uint8_t *buf)
 	int ret = 0;
 
 	if (efuse->force || user_confirmation(buf, fuse->reg, fuse->size)) {
-		ret = _write(efuse->file, buf, fuse->reg, fuse->size >> 2);
+		ret = _write(efuse->file, buf, fuse->reg, ALIGN(fuse->size) >> 2);
 		if (ret == fuse->size >> 2)
 			printf("Done!\n");
 	} else {
@@ -268,6 +274,37 @@ int efuse_write(struct efuse_data *efuse, uint8_t *buf)
 
 	return ret;
 }
+
+int efuse_write_mac_mx8(struct efuse_data *efuse, uint8_t *buf)
+{
+	struct fusemap *fuse = &efuse->fuses[efuse->reg_current];
+	int ret = 0;
+
+	uint8_t mac[8] = {0};
+
+	str_to_hex((char*)efuse->hexbin.byte, (char*)buf, fuse->size<<1);
+
+	// IMX8 MAC byte ordering is reversed
+	for (uint8_t i = 0; i < 6; i++){
+		mac[i] = efuse->hexbin.byte[5-i];
+	}
+
+	/* Two MACs can be fused on 3 words. The middle word is shared
+	 * by the two MACs. We can just write zero to the unhandled two
+	 * bytes, since even if fuses are set, it won't have any negative
+	 * effect. */
+
+	if (efuse->force || user_confirmation(mac, fuse->reg, fuse->size)) {
+		ret = _write(efuse->file, mac, fuse->reg, ALIGN(fuse->size) >> 2);
+		if (ret == fuse->size >> 2)
+			printf("Done!\n");
+	} else {
+		printf("Burn efuse aborted. \n");
+	}
+
+	return ret;
+}
+
 
 int efuse_revoke_status(struct efuse_data *efuse, uint32_t *rvk)
 {
@@ -315,21 +352,31 @@ int efuse_revoke_update(struct efuse_data *efuse, uint8_t *rvk)
 }
 
 struct fusemap imx6ull_fuses[] = {
-	add_fuse("CFG5", BANK_WORD_OFFSET(0, 6), 4, 100, NULL, NULL),
-	add_fuse("SRK", BANK_WORD_OFFSET(3, 0), 32, 14, NULL, NULL),
-	add_fuse("MAC", BANK_WORD_OFFSET(4, 2), 8, 8, NULL, NULL),
-	add_fuse("Revoke", BANK_WORD_OFFSET(5, 7), 4, 100, efuse_revoke_status, efuse_revoke_update),
+	add_fuse("CFG5", BANK_WORD_OFFSET_MX6(0, 6), 4, 100, NULL, NULL),
+	add_fuse("SRK", BANK_WORD_OFFSET_MX6(3, 0), 32, 14, NULL, NULL),
+	add_fuse("MAC", BANK_WORD_OFFSET_MX6(4, 2), 6, 8, NULL, NULL),
+	add_fuse("Revoke", BANK_WORD_OFFSET_MX6(5, 7), 4, 100, efuse_revoke_status, efuse_revoke_update),
+	{NULL}
+};
+
+struct fusemap imx8mp_fuses[] = {
+	{NULL},
+	add_fuse("SRK", BANK_WORD_OFFSET_MX8(6, 0), 32, 100, NULL, NULL),
+	add_fuse("MAC", BANK_WORD_OFFSET_MX8(9, 0), 6, 100, NULL, efuse_write_mac_mx8),
+	add_fuse("Revoke", BANK_WORD_OFFSET_MX8(9, 3), 4, 100, efuse_revoke_status, efuse_revoke_update),
 	{NULL}
 };
 
 static const struct soc_fuse socs[SOC_COUNT] = {
 	{"i.MX6ULL", imx6ull_fuses},
+	{"i.MX8MP", imx8mp_fuses},
+	{"i.MX8MM", imx8mp_fuses},
 };
 
 struct fusemap * get_soc_fusemap(void)
 {
 	FILE * soc_id;
-	char buf[MAXBUFSZ];
+	char name[MAXBUFSZ];
 
 	int i;
 
@@ -345,11 +392,13 @@ struct fusemap * get_soc_fusemap(void)
 		return NULL;
 	}
 
-	fgets(buf, MAXBUFSZ, soc_id);
+	fgets(name, MAXBUFSZ, soc_id);
 
 	for (i = 0; i < SOC_COUNT; i++) {
-		if ( ! strncmp(buf, socs[i].soc_name, strlen(socs[i].soc_name)) )
+		if ( ! strncmp(name, socs[i].soc_name, strlen(socs[i].soc_name)) ) {
+			printf("Found SoC %s\n", name);
 			break;
+		}
 	}
 
 	fclose(soc_id);
@@ -444,21 +493,21 @@ void efuse_io_lock(struct efuse_data *efuse)
 		_read(efuse->file, (uint8_t*)&reg_lock, 0, 4);
 		reg_lock |= BIT(14); // SRK_LOCK
 
-		_read(efuse->file, (uint8_t*)&reg_cfg5, BANK_WORD_OFFSET(0, 6), 4);
+		_read(efuse->file, (uint8_t*)&reg_cfg5, BANK_WORD_OFFSET_MX6(0, 6), 4);
 		reg_cfg5 |= BITMAP(2, 1); // SEC_CONFIG (1x -> security on)
-		reg = BANK_WORD_OFFSET(0, 6);
+		reg = BANK_WORD_OFFSET_MX6(0, 6);
 	}
 	if (lockopt.sdp) {
 		if (!reg_cfg5)
-			_read(efuse->file, (uint8_t*)&reg_cfg5, BANK_WORD_OFFSET(0, 6), 4);
+			_read(efuse->file, (uint8_t*)&reg_cfg5, BANK_WORD_OFFSET_MX6(0, 6), 4);
 		reg_cfg5 |= BIT(17); // SDP_DISABLE
-		reg = BANK_WORD_OFFSET(0, 6);
+		reg = BANK_WORD_OFFSET_MX6(0, 6);
 	}
 	if (lockopt.jtag) {
 		if (!reg_cfg5)
-			_read(efuse->file, (uint8_t*)&reg_cfg5, BANK_WORD_OFFSET(0, 6), 4);
+			_read(efuse->file, (uint8_t*)&reg_cfg5, BANK_WORD_OFFSET_MX6(0, 6), 4);
 		reg_cfg5 |= BIT(20); // SJC_DISABLE
-		reg = BANK_WORD_OFFSET(0, 6);
+		reg = BANK_WORD_OFFSET_MX6(0, 6);
 	}
 
 	if (reg_lock) {
@@ -499,7 +548,7 @@ struct efuse_data * efuse_data_init(void)
 	efuse_data->fuses = get_soc_fusemap();
 
 	if (efuse_data->fuses == NULL) {
-		printf("Cannot get SOC type. Using i.MX6ULL as default value\n");
+		printf("Cannot get SOC type. Using i.MX6ULL as default fuse base\n");
 		efuse_data->fuses = imx6ull_fuses;
 	}
 
@@ -611,7 +660,7 @@ int main(int argc, char** argv)
 
 	/* Read lock status registers */
 	size = _read(efuse->file, (uint8_t*)&efuse->lockstat, 0, 4);
-	printf("lockstat: %x\n", efuse->lockstat);
+	//printf("lockstat: %x\n", efuse->lockstat);
 
 	if (ioflag == IO_LOCK)
 		efuse_io_lock(efuse);
