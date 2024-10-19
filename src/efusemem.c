@@ -68,8 +68,14 @@
 	}
 
 #define switch_entry(_opt)		\
-	struct fusemap * fuse##_opt = &efuse->fuses[_opt]; \
+	fusemap_t * fuse##_opt = &efuse->soc_data->fuses[_opt]; \
 	_fuse_init(fuse##_opt)
+
+enum efuse_op_flag {
+	IO_READ,
+	IO_WRITE,
+	IO_LOCK
+};
 
 enum efuse_regs {
 	CFG5,
@@ -79,9 +85,17 @@ enum efuse_regs {
 	EFUSE_REGS_END
 };
 
+typedef enum efuse_lock_id {
+	SRK_LOCK,
+	SEC_CONFIG,
+	SDP_DISABLE,
+	SJC_DISABLE,
+	LOCKID_END
+} lock_id_t;
+
 struct efuse_data;
 
-struct fusemap {
+typedef struct fusemap {
 	const char *name;
 	uint32_t reg;
 	uint8_t size;
@@ -92,12 +106,19 @@ struct fusemap {
 	int (*write)(struct efuse_data *, uint8_t *);
 	int (*misc_func)(struct efuse_data *);
 	bool is_active;
-};
+} fusemap_t;
 
-struct soc_fuse {
+typedef struct lockopt {
+	lock_id_t id;
+	uint32_t addr;
+	uint8_t bit;
+} lockopt_t;
+
+typedef struct soc_data {
 	const char *soc_name;
-	struct fusemap *fuse;
-};
+	fusemap_t *fuses;
+	const lockopt_t *locks;
+} soc_data_t;
 
 struct efuse_lock_options_s {
 	int secureboot;
@@ -108,7 +129,7 @@ struct efuse_lock_options_s {
 typedef struct efuse_lock_options_s efuse_lock_options;
 
 struct efuse_data {
-	struct fusemap *fuses;
+	soc_data_t *soc_data;
 	enum efuse_regs reg_current;
 	union hashval {
 		uint8_t byte[32];
@@ -120,15 +141,9 @@ struct efuse_data {
 	bool force;
 };
 
-enum efuse_op_flag {
-	IO_READ,
-	IO_WRITE,
-	IO_LOCK
-};
-
 const char * soc_id_path = "/sys/devices/soc0/soc_id";
-
-static efuse_lock_options lockopt;
+static efuse_lock_options lockopts;
+static struct efuse_data *efuse;
 
 void print_help(void) {
 	printf("Usage: efusemem read/write/lock [fhkmryv] <options> <path_to_nvmem>\n");
@@ -150,7 +165,32 @@ void print_help(void) {
 	);
 }
 
-static struct efuse_data *efuse;
+fusemap_t * get_fusemap(struct efuse_data * efuse)
+{
+	return &efuse->soc_data->fuses[efuse->reg_current];
+}
+
+static const lockopt_t * get_lockopts(struct efuse_data * efuse)
+{
+	return efuse->soc_data->locks;
+}
+
+char *lock_helper(int id)
+{
+	switch (id) {
+		case SRK_LOCK:
+		case SEC_CONFIG:
+			return "enable Secureboot";
+			break;
+		case SDP_DISABLE:
+			return "disable Serial Download Protocol";
+			break;
+		case SJC_DISABLE:
+			return "disable Secure JTAG Controller";
+			break;
+	}
+	return NULL;
+}
 
 void str_to_hex(char *dest, char *src, size_t n)
 {
@@ -209,7 +249,7 @@ static int _write(FILE *file, uint8_t *buf, int offset, int len)
 
 int read_hash_from_file(struct efuse_data *efuse, char *file)
 {
-	struct fusemap *fuse = &efuse->fuses[efuse->reg_current];
+	fusemap_t *fuse = get_fusemap(efuse);
 	int fd;
 	int size;
 	char *buf = (char*)efuse->hexbin.byte;
@@ -249,9 +289,25 @@ int user_confirmation(uint8_t *data, int reg, int len)
 	return ret;
 }
 
+int user_confirmation_lock(const lockopt_t *lock)
+{
+	char input;
+	int ret;
+
+	printf("This will irrecoverably %s.", lock_helper(lock->id));
+	printf(" Do you want to continue? [Y/N]: ");
+
+	ret = scanf("%c", &input);
+
+	ret = input == 'y' || input == 'Y' ? 1 : 0;
+
+	return ret;
+}
+
+
 int efuse_read(struct efuse_data *efuse, uint8_t *buf)
 {
-	struct fusemap *fuse = &efuse->fuses[efuse->reg_current];
+	fusemap_t *fuse = get_fusemap(efuse);
 	int ret;
 
 	ret = _read(efuse->file, (uint8_t*)buf, fuse->reg, fuse->size);
@@ -261,7 +317,7 @@ int efuse_read(struct efuse_data *efuse, uint8_t *buf)
 
 int efuse_write(struct efuse_data *efuse, uint8_t *buf)
 {
-	struct fusemap *fuse = &efuse->fuses[efuse->reg_current];
+	fusemap_t *fuse = get_fusemap(efuse);
 	int ret = 0;
 
 	if (efuse->force || user_confirmation(buf, fuse->reg, fuse->size)) {
@@ -277,8 +333,7 @@ int efuse_write(struct efuse_data *efuse, uint8_t *buf)
 
 int efuse_write_mac_mx8(struct efuse_data *efuse, uint8_t *buf)
 {
-	struct fusemap *fuse = &efuse->fuses[efuse->reg_current];
-	int ret = 0;
+	fusemap_t *fuse = get_fusemap(efuse);
 
 	uint8_t mac[8] = {0};
 
@@ -359,6 +414,27 @@ struct fusemap imx6ull_fuses[] = {
 	{NULL}
 };
 
+static const lockopt_t imx6ull_locks[] = {
+	{
+		.id = SRK_LOCK,
+		.addr = BANK_WORD_OFFSET_MX6(0, 0),
+		.bit = 14,
+	}, {
+		.id = SEC_CONFIG,
+		.addr = BANK_WORD_OFFSET_MX6(0, 6),
+		.bit = 1,
+	}, {
+		.id = SDP_DISABLE,
+		.addr = BANK_WORD_OFFSET_MX6(0, 6),
+		.bit = 17,
+	}, {
+		.id = SJC_DISABLE,
+		.addr = BANK_WORD_OFFSET_MX6(0, 6),
+		.bit = 20,
+	},
+	{LOCKID_END, 0, 0}
+};
+
 struct fusemap imx8mp_fuses[] = {
 	{NULL},
 	add_fuse("SRK", BANK_WORD_OFFSET_MX8(6, 0), 32, 100, NULL, NULL),
@@ -367,18 +443,52 @@ struct fusemap imx8mp_fuses[] = {
 	{NULL}
 };
 
-static const struct soc_fuse socs[SOC_COUNT] = {
-	{"i.MX6ULL", imx6ull_fuses},
-	{"i.MX8MP", imx8mp_fuses},
-	{"i.MX8MM", imx8mp_fuses},
+static const lockopt_t imx8mp_locks[] = {
+	{
+		.id = SRK_LOCK,
+		.addr = BANK_WORD_OFFSET_MX8(0, 0),
+		.bit = 9,
+	}, {
+		.id = SEC_CONFIG,
+		.addr = BANK_WORD_OFFSET_MX8(1, 3),
+		.bit = 25,
+	}, {
+		.id = SDP_DISABLE,
+		.addr = BANK_WORD_OFFSET_MX8(2, 0),
+		.bit = 21,
+	}, {
+		.id = SJC_DISABLE,
+		.addr = BANK_WORD_OFFSET_MX8(1, 3),
+		.bit = 21,
+	},
+	{LOCKID_END, 0, 0}
 };
 
-struct fusemap * get_soc_fusemap(void)
+
+static struct soc_data socs[] = {
+	{
+		.soc_name = "i.MX6ULL",
+		.fuses = imx6ull_fuses,
+		.locks = imx6ull_locks,
+	}, {
+		.soc_name = "i.MX8MP",
+		.fuses = imx8mp_fuses,
+		.locks = imx8mp_locks,
+	}, {
+		.soc_name = "i.MX8MM",
+		.fuses = imx8mp_fuses,
+		.locks = imx8mp_locks,
+	},
+	{NULL}
+};
+
+struct soc_data * get_soc_data(void)
 {
 	FILE * soc_id;
 	char name[MAXBUFSZ];
 
 	int i;
+	bool found = false;
 
 	/* For the means of generic SOC approach (at least for ARM cores)
 	 * we need to detect the soc-type. This should be possible through
@@ -392,18 +502,21 @@ struct fusemap * get_soc_fusemap(void)
 		return NULL;
 	}
 
-	fgets(name, MAXBUFSZ, soc_id);
+	if (fgets(name, MAXBUFSZ, soc_id) == NULL)
+		goto get_soc_data_exit;
 
 	for (i = 0; i < SOC_COUNT; i++) {
 		if ( ! strncmp(name, socs[i].soc_name, strlen(socs[i].soc_name)) ) {
-			printf("Found SoC %s\n", name);
+			printf("Found SoC: %s\n", name);
+			found = true;
 			break;
 		}
 	}
 
+get_soc_data_exit:
 	fclose(soc_id);
 
-	return socs[i].fuse;
+	return found ? &socs[i] : NULL;
 }
 
 int efuse_hashfile_update(struct efuse_data *efuse, uint8_t *file)
@@ -421,38 +534,77 @@ int efuse_hashfile_update(struct efuse_data *efuse, uint8_t *file)
 	return ret;
 }
 
+static int efuse_io_lock(struct efuse_data *efuse)
+{
+	const lockopt_t *locks = get_lockopts(efuse);
+	uint32_t addr, data;
+	int ret = 0;
+
+	if (lockopts.secureboot) {
+		data = BIT(locks[SRK_LOCK].bit);
+		addr = locks[SRK_LOCK].addr;
+		if (efuse->force || user_confirmation_lock(&locks[SRK_LOCK]))
+			ret = _write(efuse->file, (uint8_t*) &data, addr, 1);
+		else
+			goto efuse_io_lock_ret_abort;
+
+		if (ret)
+			goto efuse_io_lock_ret_fail;
+
+		data = BIT(locks[SEC_CONFIG].bit);
+		addr = locks[SEC_CONFIG].addr;
+		ret = _write(efuse->file, (uint8_t*) &data, addr, 1);
+	}
+
+	if (lockopts.sdp) {
+		data = BIT(locks[SDP_DISABLE].bit);
+		addr = locks[SDP_DISABLE].addr;
+		if (efuse->force || user_confirmation_lock(&locks[SDP_DISABLE]))
+			ret = _write(efuse->file, (uint8_t*) &data, addr, 1);
+		else
+			goto efuse_io_lock_ret_abort;
+
+		if (ret)
+			goto efuse_io_lock_ret_fail;
+	}
+
+	if (lockopts.jtag) {
+		data = BIT(locks[SJC_DISABLE].bit);
+		addr = locks[SJC_DISABLE].addr;
+		if (efuse->force || user_confirmation_lock(&locks[SJC_DISABLE]))
+			ret = _write(efuse->file, (uint8_t*) &data, addr, 1);
+		else
+			goto efuse_io_lock_ret_abort;
+
+		if (ret)
+			goto efuse_io_lock_ret_fail;
+	}
+
+	return 0;
+
+efuse_io_lock_ret_abort:
+	printf("Burn efuse aborted.\n");
+efuse_io_lock_ret_fail:
+	return ret;
+}
+
 void efuse_io(struct efuse_data *efuse, enum efuse_op_flag opflag)
 {
-	struct fusemap *fuse;
+	fusemap_t *fuse;
 	int ret;
 	uint8_t *data = NULL;
 
 	for (efuse->reg_current = 0; efuse->reg_current < EFUSE_REGS_END; efuse->reg_current++) {
-		fuse = &efuse->fuses[efuse->reg_current];
+		fuse = get_fusemap(efuse);
 		if (!fuse->is_active)
 			continue;
 
-		data = calloc(1, fuse->size*sizeof(char));
-		if (data == NULL) {
-			perror("Error");
-			return;
-		}
-		if (opflag == IO_READ) {
-			ret = fuse->read ? fuse->read(efuse, (uint32_t*)data)
-						: efuse_read(efuse, data);
-			if (ret < 0) {
-				printf("Failed to read %s\n", fuse->name);
-				goto efuse_io_exit;
-			}
-
-			printf("%s: ", fuse->name);
-			if (! strcmp(fuse->name, "SRK") ) {
-				for (int i = 0; i < fuse->size; i=i+2)
-					printf("%.2x%.2x", *(uint8_t*)(data+i),*(uint8_t*)(data+i+1));
-			}
-			else if (! strcmp(fuse->name, "MAC") ) {
-				for (int i = 5; i >= 0; i--) {
-					printf("%.2x", *(uint8_t*)(data+i));
+		switch (opflag) {
+			case IO_READ:
+				data = calloc(1, fuse->size*sizeof(char));
+				if (data == NULL) {
+					perror("calloc");
+					return;
 				}
 			}
 			else {
@@ -477,60 +629,48 @@ efuse_io_exit:
 	}
 }
 
-/*
- * @TODO - Rework the lock function
- * This hardcoded stuff was only written on demand. Think of a
- * generic approch, instead
- */
-void efuse_io_lock(struct efuse_data *efuse)
-{
-	uint32_t reg_lock = 0, reg_cfg5 = 0;
-	int reg;
+				ret = fuse->read ? fuse->read(efuse, (uint32_t*)data)
+						: efuse_read(efuse, data);
+				if (ret < 0) {
+					printf("Failed to read %s\n", fuse->name);
+				} else {
+					printf("%s: ", fuse->name);
+					if (! strcmp(fuse->name, "SRK") ) {
+						for (int i = 0; i < fuse->size; i=i+2)
+							printf("%.2x%.2x", *(uint8_t*)(data+i),*(uint8_t*)(data+i+1));
+					} else if (! strcmp(fuse->name, "MAC") ) {
+						for (int i = 5; i >= 0; i--)
+							printf("%.2x", *(uint8_t*)(data+i));
+					} else {
+						for (int i = 0; i < fuse->size; i=i+1)
+							printf("%.2x ", *(uint8_t*)(data+i));
+					}
+					printf("\n");
+				}
 
-	printf("%s\n", __func__);
-	printf("jtag: %d\n", lockopt.jtag);
-	if (lockopt.secureboot) {
-		_read(efuse->file, (uint8_t*)&reg_lock, 0, 4);
-		reg_lock |= BIT(14); // SRK_LOCK
+				if (data)
+					free(data);
+				break;
+			case IO_WRITE:
+				printf("%s: Write operation\n", fuse->name);
 
-		_read(efuse->file, (uint8_t*)&reg_cfg5, BANK_WORD_OFFSET_MX6(0, 6), 4);
-		reg_cfg5 |= BITMAP(2, 1); // SEC_CONFIG (1x -> security on)
-		reg = BANK_WORD_OFFSET_MX6(0, 6);
-	}
-	if (lockopt.sdp) {
-		if (!reg_cfg5)
-			_read(efuse->file, (uint8_t*)&reg_cfg5, BANK_WORD_OFFSET_MX6(0, 6), 4);
-		reg_cfg5 |= BIT(17); // SDP_DISABLE
-		reg = BANK_WORD_OFFSET_MX6(0, 6);
-	}
-	if (lockopt.jtag) {
-		if (!reg_cfg5)
-			_read(efuse->file, (uint8_t*)&reg_cfg5, BANK_WORD_OFFSET_MX6(0, 6), 4);
-		reg_cfg5 |= BIT(20); // SJC_DISABLE
-		reg = BANK_WORD_OFFSET_MX6(0, 6);
-	}
-
-	if (reg_lock) {
-		if (efuse->force || user_confirmation((uint8_t*)&reg_lock, reg, 4)) {
-		_write(efuse->file, (uint8_t*)&reg_lock, 0, 4);
-		} else {
-			goto efuse_io_lock_ret_fail;
+				if (fuse->write) {
+					ret = fuse->write(efuse, (uint8_t*)fuse->arg);
+				} else {
+					str_to_hex((char*)efuse->hexbin.byte, fuse->arg,
+							(fuse->size == 1) ? fuse->size : fuse->size<<1);
+					ret = efuse_write(efuse, efuse->hexbin.byte);
+				}
+				break;
+			default:
+				break;
 		}
 	}
 
-	if (reg_cfg5) {
-		if (efuse->force || user_confirmation((uint8_t*)&reg_cfg5, reg, 4)) {
-			_write(efuse->file, (uint8_t*)&reg_cfg5, reg, 4);
-		} else {
-			goto efuse_io_lock_ret_fail;
-		}
+	if (opflag == IO_LOCK) {
+		ret = efuse_io_lock(efuse);
 	}
-
-	printf("Done!\n");
-	return;
-
-efuse_io_lock_ret_fail:
-	printf("Burn efuse aborted.\n");
+//efuse_io_exit:
 }
 
 struct efuse_data * efuse_data_init(void)
@@ -545,11 +685,11 @@ struct efuse_data * efuse_data_init(void)
 
 	efuse_data->reg_current = 0;
 	efuse_data->force = false;
-	efuse_data->fuses = get_soc_fusemap();
+	efuse_data->soc_data = get_soc_data();
 
-	if (efuse_data->fuses == NULL) {
+	if (efuse_data->soc_data == NULL) {
 		printf("Cannot get SOC type. Using i.MX6ULL as default fuse base\n");
-		efuse_data->fuses = imx6ull_fuses;
+		efuse_data->soc_data = &socs[0];
 	}
 
 efuse_init_ret:
@@ -564,9 +704,9 @@ const struct option efuseopts[] = {
 	{"force", no_argument, 0, 'y'},
 	{"help", no_argument, 0, 'h'},
 	{"version", no_argument, 0, 'v'},
-	{"secureboot", no_argument, &lockopt.secureboot, true},
-	{"sdp", no_argument, &lockopt.sdp, true},
-	{"jtag", no_argument, &lockopt.jtag, true},
+	{"secureboot", no_argument, &lockopts.secureboot, true},
+	{"sdp", no_argument, &lockopts.sdp, true},
+	{"jtag", no_argument, &lockopts.jtag, true},
 	{0}
 };
 
@@ -606,7 +746,7 @@ int main(int argc, char** argv)
 				switch_entry(MAC)
 				break;
 			case 'f':;
-				struct fusemap *fuse = &efuse->fuses[SRK];
+				fusemap_t *fuse = &efuse->soc_data->fuses[SRK];
 				fuse->arg = strdup(optarg);
 				if (!fuse->arg) {
 					printf("Cannot allocate memory\n");
@@ -662,10 +802,7 @@ int main(int argc, char** argv)
 	size = _read(efuse->file, (uint8_t*)&efuse->lockstat, 0, 4);
 	//printf("lockstat: %x\n", efuse->lockstat);
 
-	if (ioflag == IO_LOCK)
-		efuse_io_lock(efuse);
-	else
-		efuse_io(efuse, ioflag);
+	efuse_io(efuse, ioflag);
 
 	if (fclose(efuse->file) == EOF) {
 		perror("Error");
@@ -678,7 +815,7 @@ main_free_file:
 		free(ofile);
 
 main_free_mem:
-	for(struct fusemap *fuse = efuse->fuses; fuse->name; fuse++) {
+	for(fusemap_t *fuse = efuse->soc_data->fuses; fuse->name; fuse++) {
 		if (fuse->arg)
 			free(fuse->arg);
 	}
