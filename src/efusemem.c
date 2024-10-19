@@ -319,18 +319,27 @@ int efuse_write(struct efuse_data *efuse, uint8_t *buf)
 {
 	fusemap_t *fuse = get_fusemap(efuse);
 	int ret = 0;
+	int aligned_size = ALIGN(fuse->size);
+	unsigned offset = fuse->reg;
 
-	if (efuse->force || user_confirmation(buf, fuse->reg, fuse->size)) {
-		ret = _write(efuse->file, buf, fuse->reg, ALIGN(fuse->size) >> 2);
-		if (ret == fuse->size >> 2)
-			printf("Done!\n");
+	uint8_t *data = calloc(aligned_size, sizeof(uint8_t));
+
+	memcpy(data, buf, fuse->size);
+
+	if (efuse->force || user_confirmation(data, fuse->reg, fuse->size)) {
+		for (int i = 0; i < aligned_size; i+=4)
+			ret = _write(efuse->file, &data[i], offset+i, 4);
+		//if (ret == aligned_size >> 2)
+		printf("Done!\n");
 	} else {
 		printf("Burn efuse aborted. \n");
 	}
 
+	free(data);
 	return ret;
 }
 
+// TODO Two MACs can be burned but one is supported at the moment
 int efuse_write_mac_mx8(struct efuse_data *efuse, uint8_t *buf)
 {
 	fusemap_t *fuse = get_fusemap(efuse);
@@ -349,17 +358,8 @@ int efuse_write_mac_mx8(struct efuse_data *efuse, uint8_t *buf)
 	 * bytes, since even if fuses are set, it won't have any negative
 	 * effect. */
 
-	if (efuse->force || user_confirmation(mac, fuse->reg, fuse->size)) {
-		ret = _write(efuse->file, mac, fuse->reg, ALIGN(fuse->size) >> 2);
-		if (ret == fuse->size >> 2)
-			printf("Done!\n");
-	} else {
-		printf("Burn efuse aborted. \n");
-	}
-
-	return ret;
+	return efuse_write(efuse, mac);
 }
-
 
 int efuse_revoke_status(struct efuse_data *efuse, uint32_t *rvk)
 {
@@ -410,7 +410,7 @@ struct fusemap imx6ull_fuses[] = {
 	add_fuse("CFG5", BANK_WORD_OFFSET_MX6(0, 6), 4, 100, NULL, NULL),
 	add_fuse("SRK", BANK_WORD_OFFSET_MX6(3, 0), 32, 14, NULL, NULL),
 	add_fuse("MAC", BANK_WORD_OFFSET_MX6(4, 2), 6, 8, NULL, NULL),
-	add_fuse("Revoke", BANK_WORD_OFFSET_MX6(5, 7), 4, 100, efuse_revoke_status, efuse_revoke_update),
+	add_fuse("Revoke", BANK_WORD_OFFSET_MX6(5, 7), 1, 100, efuse_revoke_status, efuse_revoke_update),
 	{NULL}
 };
 
@@ -439,7 +439,7 @@ struct fusemap imx8mp_fuses[] = {
 	{NULL},
 	add_fuse("SRK", BANK_WORD_OFFSET_MX8(6, 0), 32, 100, NULL, NULL),
 	add_fuse("MAC", BANK_WORD_OFFSET_MX8(9, 0), 6, 100, NULL, efuse_write_mac_mx8),
-	add_fuse("Revoke", BANK_WORD_OFFSET_MX8(9, 3), 4, 100, efuse_revoke_status, efuse_revoke_update),
+	add_fuse("Revoke", BANK_WORD_OFFSET_MX8(9, 3), 1, 100, efuse_revoke_status, efuse_revoke_update),
 	{NULL}
 };
 
@@ -606,28 +606,6 @@ void efuse_io(struct efuse_data *efuse, enum efuse_op_flag opflag)
 					perror("calloc");
 					return;
 				}
-			}
-			else {
-				for (int i = 0; i < fuse->size; i=i+1)
-					printf("%.2x ", *(uint8_t*)(data+i));
-			}
-			printf("\n");
-		} else if (opflag == IO_WRITE) {
-			printf("%s: Write operation\n", fuse->name);
-
-			if (fuse->write) {
-				ret = fuse->write(efuse, (uint8_t*)fuse->arg);
-			} else {
-				str_to_hex((char*)efuse->hexbin.byte, fuse->arg,
-						(fuse->size == 1) ? fuse->size : fuse->size<<1);
-				ret = efuse_write(efuse, efuse->hexbin.byte);
-			}
-		}
-efuse_io_exit:
-		if (data)
-			free(data);
-	}
-}
 
 				ret = fuse->read ? fuse->read(efuse, (uint32_t*)data)
 						: efuse_read(efuse, data);
@@ -791,7 +769,7 @@ int main(int argc, char** argv)
 
 	printf("fuse device: %s\n", ofile);
 
-	efuse->file = fopen(ofile, "r+");
+	efuse->file = fopen(ofile, "r+b");
 	if (efuse->file == NULL) {
 		perror("fopen");
 		return_code = EXIT_FAILURE;
