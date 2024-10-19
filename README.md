@@ -3,11 +3,15 @@
 Tool to read/write efuses through NVMEM on NXP based modules.
 Currently supported SoC's:
   - i.MX6ULL
+  - i.MX6Q
+  - i.MX8MM
+  - i.MX8MP
 
 Product State
 =============
-Alpha  
-implemented functions are not finally tested!
+Beta
+- Features testet on i.MX6Q and i.MX8MP
+- Further tests on production line
 
 Dependencies
 ============
@@ -19,9 +23,9 @@ For building *efusemem* from source the following dependencies are needed:
 Building
 ========
 
-Build *efusemem* using the `Meson Build system <https://mesonbuild.com>` 
+Build *efusemem* using the `Meson Build system <https://mesonbuild.com>
 
-   meson setup build  
+   meson setup build
    meson compile -C build
 
 Running
@@ -29,7 +33,7 @@ Running
 ```
 efusemem read/write/lock [fhkmryv] <options> <path_to_nvmem>
 
-Read/Write options:  
+Read/Write options:
   -k --hash     read/write HASH from commandline
   -f --file     write HASH from file
   -m --mac      read/write MAC address from commandline
@@ -43,5 +47,5 @@ General options:
   -h --help     print help info
   -v --version  print version of the program
 path_to_nvmem
-  for i.MX6UL: /sys/bus/nvmem/devices/imx-ocotp0/nvmem
+  (default: /sys/bus/nvmem/devices/imx-ocotp0/nvmem)
 ```
