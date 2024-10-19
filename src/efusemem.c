@@ -470,6 +470,10 @@ static struct soc_data socs[] = {
 		.fuses = imx6ull_fuses,
 		.locks = imx6ull_locks,
 	}, {
+		.soc_name = "i.MX6Q",
+		.fuses = imx6ull_fuses,
+		.locks = imx6ull_locks,
+	}, {
 		.soc_name = "i.MX8MP",
 		.fuses = imx8mp_fuses,
 		.locks = imx8mp_locks,
