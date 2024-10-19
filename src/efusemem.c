@@ -23,8 +23,6 @@
 #define ALIGN(x)	\
 	(!(x & 3) ? x : ((x & ~3) + 4))
 
-#define MAC_ADDR_MAX		6
-
 #define _WORD(x)	((x) << 2)
 #define _BANK_MX6(x)	((x) << 5)
 #define _BANK_MX8(x)	((x) << 4)
@@ -33,16 +31,17 @@
 
 #define OCOTP_REVOKE(x)	((1 << x) & 0xf)
 
-/* CFG5 register */
-#define CFG5_SEC_CONFIG		BIT(1)
-#define CFG5_SDP_DISABLE	BIT(17)
-#define	CFG5_SJC_DISABLE	BIT(20)
-#define CFG5_WDOG_ENABLE	BIT(21)
-#define CFG5_JTAG_SMODE		BITMAP(3, 22)
-
-#define add_fuse(_name, _reg, _size, _lock, _read, _write)	\
-	{.name = _name, .reg = _reg, .size = _size, 0,	\
-	 .lockbit = _lock, .read = _read, .write = _write, NULL, false}
+#define add_fuse(_name, _reg, _size, _lock, _read, __write)	\
+	{	\
+		.name = _name, \
+		.reg = _reg, \
+		.size = _size, \
+		.access_flags = 0, \
+		.lockbit = _lock, \
+		.read = _read, \
+		.write = __write, \
+		.is_active = false, \
+	}
 
 #define _fuse_init(_fuse)		\
 	_fuse->is_active = true;	\
@@ -104,7 +103,6 @@ typedef struct fusemap {
 	char *arg;
 	int (*read)(struct efuse_data *, uint32_t *);
 	int (*write)(struct efuse_data *, uint8_t *);
-	int (*misc_func)(struct efuse_data *);
 	bool is_active;
 } fusemap_t;
 
@@ -238,12 +236,13 @@ static int _write(FILE *file, uint8_t *buf, int offset, int len)
 	int size;
 	fseek(file, offset, SEEK_SET);
 
-	size = fwrite(buf, 4, len, file);
+	size = fwrite(buf, 1, len, file);
 	if (ferror(file)) {
 		printf("Write to file failed\n");
 		clearerr(file);
 		return -1;
 	}
+
 	return size;
 }
 
@@ -492,13 +491,13 @@ struct soc_data * get_soc_data(void)
 
 	/* For the means of generic SOC approach (at least for ARM cores)
 	 * we need to detect the soc-type. This should be possible through
-	 * vendor reserved registers. For now, we can use the kernel
-	 * derived file for SoC ID.
+	 * vendor reserved registers. But for now, we can use the kernel
+	 * derived sysfs-file for SoC ID.
 	 */
 
 	soc_id = fopen(soc_id_path, "r");
 	if (soc_id == NULL) {
-		perror("Error");
+		perror("fopen");
 		return NULL;
 	}
 
@@ -767,7 +766,7 @@ int main(int argc, char** argv)
 		goto main_free_file;
 	}
 
-	printf("fuse device: %s\n", ofile);
+	//printf("fuse device: %s\n", ofile);
 
 	efuse->file = fopen(ofile, "r+b");
 	if (efuse->file == NULL) {
@@ -776,14 +775,16 @@ int main(int argc, char** argv)
 		goto main_exit;
 	}
 
+	//printf("Soc name: %s\n", efuse->soc_data->soc_name);
+
 	/* Read lock status registers */
 	size = _read(efuse->file, (uint8_t*)&efuse->lockstat, 0, 4);
-	//printf("lockstat: %x\n", efuse->lockstat);
+	//printf("lockstats: %x\n", efuse->lockstat);
 
 	efuse_io(efuse, ioflag);
 
 	if (fclose(efuse->file) == EOF) {
-		perror("Error");
+		perror("fclose");
 		return_code = EXIT_FAILURE;
 		goto main_free_file;
 	}
