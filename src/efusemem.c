@@ -159,7 +159,7 @@ void print_help(void) {
 		 "	-h --help		print help info\n"
 		 "  -v --version    print version of the program\n"
 		 "  path to nvmem\n"
-		 "  for i.MX6UL: /sys/bus/nvmem/devices/imx-ocotp0/nvmem\n"
+		 "  (default: /sys/bus/nvmem/devices/imx-ocotp0/nvmem)\n"
 	);
 }
 
@@ -695,7 +695,7 @@ int main(int argc, char** argv)
 {
 	int opt;
 	int efuseoptind;
-	char *ofile = NULL;
+	char *nvmem = NULL;
 	enum efuse_op_flag ioflag = false;
 	int size;
 	int return_code=0;
@@ -756,23 +756,18 @@ int main(int argc, char** argv)
 		}
 	}
 
-	if (optind == argc || !argv[optind+1]) {
-		printf("path to nvmem is missing\n");
-		print_help();
-		return_code = EXIT_FAILURE;
-		goto main_free_mem;
-	}
-
-	ofile = strdup(argv[optind+1]);
-	if (!ofile) {
+	nvmem = (optind == argc || !argv[optind+1])
+			? strdup("/sys/bus/nvmem/devices/imx-ocotp0/nvmem")
+			: strdup(argv[optind+1]);
+	if (!nvmem) {
 		printf("Cannot allocate memory\n");
 		return_code = EXIT_FAILURE;
 		goto main_free_file;
 	}
 
-	//printf("fuse device: %s\n", ofile);
+	//printf("fuse device: %s\n", nvmem);
 
-	efuse->file = fopen(ofile, "r+b");
+	efuse->file = fopen(nvmem, "r+b");
 	if (efuse->file == NULL) {
 		perror("fopen");
 		return_code = EXIT_FAILURE;
@@ -794,8 +789,8 @@ int main(int argc, char** argv)
 	}
 
 main_free_file:
-	if (ofile)
-		free(ofile);
+	if (nvmem)
+		free(nvmem);
 
 main_free_mem:
 	for(fusemap_t *fuse = efuse->soc_data->fuses; fuse->name; fuse++) {
