@@ -157,9 +157,9 @@ void print_help(void) {
 		 "  General options:\n"
 		 "	-y --force		bypass user confirm. Say yes to all\n"
 		 "	-h --help		print help info\n"
-		 "  -v --version    print version of the program\n"
-		 "  path to nvmem\n"
-		 "  (default: /sys/bus/nvmem/devices/imx-ocotp0/nvmem)\n"
+		 "	-v --version    print version of the program\n"
+		 "  path to nvmem:\n"
+		 "	(default: /sys/bus/nvmem/devices/imx-ocotp0/nvmem)\n"
 	);
 }
 
